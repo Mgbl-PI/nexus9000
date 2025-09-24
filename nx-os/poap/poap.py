@@ -1282,16 +1282,24 @@ def copy_remote_config():
              os.path.join(options["destination_path"], org_file))
 
 def get_image_type():
+    """
+    Determines the image type of the system based on existence of platform files.
+    Returns:
+        str: The image type suffix corresponding to the platform.
+             Returns empty string if none of the mapped files exist.
+    """
     
-    if (os.path.exists("/isan/etc/cs.txt")):
-        return "-cs"
+    image_type_map = {
+        "/isan/etc/cs.txt": "-cs",
+        "/isan/etc/noncs.txt": "-msll", 
+        "/isan/etc/s1.txt": "-s1",
+        "/isan/etc/s1-dpu.txt": "-s1-dpu"
+    }
     
-    if (os.path.exists("/isan/etc/noncs.txt")):
-        return "-msll"
-
-    if (os.path.exists("/isan/etc/s1.txt")):
-        return "-s1"
-
+    for file_path, image_type in image_type_map.items():
+        if os.path.exists(file_path):
+            return image_type
+    
     return ""
     
 def target_system_image_is_currently_running():
