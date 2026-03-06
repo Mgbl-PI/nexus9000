@@ -2673,9 +2673,9 @@ def process_bundle():
     Processes the bundle for POAP deployment. Assumes bundle mode is supported and bundle name is determined.
 
     Steps:
-    1. Creates/cleans the /bootflash/poap_pending/ directory
+    1. Creates/cleans the /bootflash/.poap_pending/ directory
     2. Attempts to copy bundle (tries .tar extension first, then .tgz if that fails)
-    3. Extracts the bundle to poap_pending directory
+    3. Extracts the bundle to the target directory
     4. Searches for poap.cfg in extracted bundle (root, subdirectory, or nested locations)
     5. Validates that the config contains 'feature openconfig' requirement
     6. Moves the config file to the destination path for POAP processing
@@ -2684,9 +2684,9 @@ def process_bundle():
         True: Bundle processing successful, skip normal config copy in POAP flow
         False: Bundle processing failed, proceed with normal POAP flow
     
-    Note: Cleans up poap_pending directory on any failure
+    Note: Cleans up .poap_pending directory on any failure
     """
-    dest_path_base = "/bootflash/poap_pending/"
+    dest_path_base = "/bootflash/.poap_pending/"
     ret = False
     
     try:
