@@ -39,52 +39,9 @@ Increasing the script timeout to handle the legacy nxos
 versions where upgrading will take time
 """
 # script_timeout=1800
+# For install_path YAML format, required keys, and sample file,
+# see readme.md -> "Optional YAML-driven install flow (install_path)".
 # --- Start of user editable settings ---
-# Host name and user credential
-# Add the install_path option to install licenses, rpms,
-# and certificates through script from the path mentioned. 
-# A file named <serial-number>.yaml is to be placed inside a folder named serial-number
-# which has details of files to be installed for the particular box.
-# eg. if option added is "install_path" : "/tftpboot/"
-# expected file is /tftpboot/<serial-number>/<serial-number>.yaml
-# Keywords to be used are Version, License, RPM, Certificate and Trustpoint.
-# Version is a mandatory keyword and it should be 1 for this release.
-# License : All the license files to be installed need to be listed in this
-# section in proper yaml syntax. Path should be relative to install_path
-# RPM : All rpm files to be installed need to be listed in this section in
-# proper yaml syntax. Path should be relative to install_path
-# Certificate: All certificate files and public key files which do not have a
-# trustpoint associated need to be listed in this section in proper yaml syntax.
-# These will only be copied to bootflash/poap_files/
-# Trustpoint : All pkcs12 certificates obtained from CA and which need trustpoint to be
-# configured need to be listed against the correct CA-trustpoint name for 
-# the same certificate with passphrase in proper yaml syntax.
-#
-# Sample YAML file (name XYZ12345.yaml)
-# ----------------------------------------------------------------------------
-# Version: 1
-# Certificate:
-# - ssh_key1.pub
-# - XYZ12345/nxapi_server_key.pem
-# - XYZ12345/nxapi_server_cert.pem
-# License:
-# - XYZ12345/XYZ12345_1.lic
-# - XYZ12345_2.lic
-# RPM:
-# - POAP_TPARTY_AND_PATCH_RPMS/chef-12.19.33-1.nexus7.x86_64.rpm
-# - mtx-openconfig-vlan-1.0.0.206-9.3.5.lib32_n9000.rpm
-# - POAP_TPARTY_AND_PATCH_RPMS/nxos.POAP_SMU_BGP_RELOAD-n9k_ALL-1.0.0-9.3.5.lib32_n9000.rpm
-# Target_image: nxos.9.3.5.bin
-# Trustpoint:
-#   Z1_TP:
-#     POAP_TP_FILES/XYZ12345/Z1_TP.pfx: passphrase1
-#   Z2_TP:
-#     POAP_TP_FILES/XYZ12345/Z2_TP.p12: passphrase2
-# ----------------------------------------------------------------------------
-# Additionally a "Target_image" can also be defined in .yaml file for a box to override the
-# target image for that specific box as opposed to the target_system_image given as common to all boxes
-# through script. If Target_image mentioned in yaml then that image should be kept only in 
-# target_system_image path mentioned within poap script. No relative path support for Target_image in yaml file
 
 options = {
    "username": "root",
@@ -93,6 +50,7 @@ options = {
    "transfer_protocol": "scp",
    "mode": "serial_number",
    "target_system_image": "nxos.9.3.1.bin",
+   "bundle_name": "",
 }
 
 """
@@ -372,6 +330,7 @@ def set_defaults_and_validate_options():
     set_default("source_tarball", "personality.tar")
     set_default("destination_tarball", options["source_tarball"])
     set_default("compact_image", False)
+    set_default("bundle_name", "")
 
     # Check that options are valid
     validate_options()
@@ -772,6 +731,39 @@ def split_config_not_needed():
     # NXOS 7.0.3.I3 or less
     return False
 
+
+def is_bundle_supported():
+    """
+    Checks if the image supports bundle or not. If target image is greater
+    than or equal to 10.7(1) then bundle is supported. 
+    Typical image format is nxos.10.7.1.I1.bin or nxos64-cs.10.7.1.bin for bundle supporting images.
+    """
+
+    parts = options['target_system_image'].split(".")
+    if len(parts) < 5:
+        return False
+
+    if "nxos" not in parts[0]:
+        return False
+
+    try:
+        nxos_major = int(parts[1])
+        if nxos_major > 10:
+            return True
+        elif nxos_major < 10:
+            return False
+    except ValueError:
+        return False
+
+    try:
+        nxos_minor = int(parts[2])
+        if nxos_minor >= 7:
+            return True
+        elif nxos_minor < 7:
+            return False
+    except ValueError:
+        return False
+
 def mtc_shut_member_ports(line, config_file_first):
     """
     In case bundling of any ports is done for mtc we shut down all the member
@@ -1157,16 +1149,26 @@ def do_copy(source="", dest="", login_timeout=10, dest_tmp="", compact=False, do
                 elif "no such file" in str(e):
                     if (dont_abort == True):
                         poap_log("Copy Failed. File/Directory not found")
-                        pass
+                        return False
                     else:
                         abort("Copy of %s failed: no such file" % source)
                 elif "Permission denied" in str(e):
-                    abort("Copy of %s failed: permission denied" % source)
+                    if (dont_abort == True):
+                        poap_log("Copy Failed. Permission denied")
+                        return False
+                    else:
+                        abort("Copy of %s failed: permission denied" % source)
                 elif "No space left on device" in str(e):
                     abort("Copy failed: No space left on device")
                 else:
                     poap_log("Copy failed: %s" % str(e))
                     raise
+    
+    if not os.path.exists(dest_tmp):
+        if dont_abort == True:
+            poap_log("Copy did not create temporary file: %s" % dest_tmp)
+            return False
+        abort("Copy failed: temporary file missing (%s)" % dest_tmp)
 
     try:
         file_size = os.path.getsize(dest_tmp)
@@ -1631,6 +1633,9 @@ def parse_poap_yaml():
     """
     Parses the <serial_number>.yaml file and populates the dictionary
     """
+    if not options.get("serial_number"):
+        abort("Serial number is not provided. Cannot parse yaml file for device.")
+    
     copy_path = options["install_path"] + "/" + options["serial_number"] + "/" + options["serial_number"] + ".yaml"
     alt_path = options["install_path"] + "/" + options["serial_number"] + "/" + options["serial_number"] + ".yml"
     timeout = options["timeout_copy_system"]
@@ -1964,7 +1969,7 @@ def verify_freespace():
         abort("*** Not enough bootflash space to continue POAP ***")
 
 
-def set_cfg_file_serial():
+def set_cfg_file_serial(bundle=0):
     """
     Sets the name of the switch config file to download based on chassis
     serial number. e.g conf_FOC3825R1ML.cfg
@@ -1973,12 +1978,15 @@ def set_cfg_file_serial():
 
     if 'POAP_SERIAL' in os.environ:
         poap_log("serial number %s" % os.environ['POAP_SERIAL'])
-        options["source_config_file"] = "conf.%s" % os.environ['POAP_SERIAL']
+        if bundle == 0:
+            options["source_config_file"] = "conf.%s" % os.environ['POAP_SERIAL']
+        else:
+            options["bundle_name"] = "%s" % os.environ['POAP_SERIAL']
         options["serial_number"] = os.environ['POAP_SERIAL']
     poap_log("Selected conf file name : %s" % options["source_config_file"])
 
 
-def set_cfg_file_mac():
+def set_cfg_file_mac(bundle=0):
     """
     Sets the name of the switch config file to download based on interface
     MAC address. e.g conf_7426CC5C9180.cfg
@@ -1987,30 +1995,61 @@ def set_cfg_file_mac():
     if os.environ.get("POAP_PHASE", None) == "USB":
         if options["usb_slot"] == 2:
             poap_log("usb slot is 2")
-
-        config_file = "conf_%s.cfg" % os.environ['POAP_RMAC']
+        
         options["serial_number"] = os.environ['POAP_RMAC']
-        poap_log("Router MAC conf file name : %s" % config_file)
-        if os.path.exists("/usbslot%d/%s" % (usbslot, config_file)):
-            options["source_config_file"] = config_file
-            poap_log("Selected conf file name : %s" % options["source_config_file"])
-            return
-        config_file = "conf_%s.cfg" % os.environ['POAP_MGMT_MAC']
+        if bundle == 0:
+            config_file = "conf_%s.cfg" % os.environ['POAP_RMAC']
+            poap_log("Router MAC conf file name : %s" % config_file)
+            if os.path.exists("/usbslot%d/%s" % (options["usb_slot"], config_file)):
+                options["source_config_file"] = config_file
+                poap_log("Selected conf file name : %s" % options["source_config_file"])
+                return
+            else:
+                poap_log("Config file with Router MAC not found in usb. Looking for config file with MGMT MAC")
+        else:
+            bundle_name = "%s" % os.environ['POAP_RMAC']
+            if os.path.exists("/usbslot%d/%s.tar" % (options["usb_slot"], bundle_name)) or \
+               os.path.exists("/usbslot%d/%s.tgz" % (options["usb_slot"], bundle_name)):
+                options["bundle_name"] = bundle_name
+                poap_log("Selected bundle name : %s" % options["bundle_name"])
+                return
+            else:
+                poap_log("Bundle with Router MAC not found in usb. Looking for bundle with MGMT MAC")
+        
         options["serial_number"] = os.environ['POAP_MGMT_MAC']
-        poap_log("MGMT MAC conf file name : %s" % config_file)
-        if os.path.exists("/usbslot%d/%s" % (options["usb_slot"], config_file)):
-            options["source_config_file"] = config_file
-            poap_log("Selected conf file name : %s" % options["source_config_file"])
-            return
+        if bundle == 0:
+            config_file = "conf_%s.cfg" % os.environ['POAP_MGMT_MAC']
+            poap_log("MGMT MAC conf file name : %s" % config_file)
+            if os.path.exists("/usbslot%d/%s" % (options["usb_slot"], config_file)):
+                options["source_config_file"] = config_file
+                poap_log("Selected conf file name : %s" % options["source_config_file"])
+                return
+            else:
+                poap_log("Config file with MGMT MAC not found in usb.")
+                abort("Config file not found in usb. Please make sure the config file is named with either Router MAC or MGMT MAC and is present in the usb drive.")
+        else: 
+            bundle_name = "%s" % os.environ['POAP_MGMT_MAC']
+            if os.path.exists("/usbslot%d/%s.tar" % (options["usb_slot"], bundle_name)) or \
+               os.path.exists("/usbslot%d/%s.tgz" % (options["usb_slot"], bundle_name)):
+                options["bundle_name"] = bundle_name
+                poap_log("Selected bundle name : %s" % options["bundle_name"])
+                return
+            else:
+                poap_log("Bundle with MGMT MAC not found in usb.")
+                abort("Bundle not found in usb. Please make sure the bundle is named with either Router MAC or MGMT MAC and is present in the usb drive.")
     else:
         if 'POAP_MAC' in os.environ:
             poap_log("Interface MAC %s" % os.environ['POAP_MAC'])
-            options["source_config_file"] = "conf_%s.cfg" % os.environ['POAP_MAC']
+            if bundle == 0:
+               options["source_config_file"] = "conf_%s.cfg" % os.environ['POAP_MAC']
+               poap_log("Selected conf file name : %s" % options["source_config_file"])
+            else:
+               options["bundle_name"] = "%s" % os.environ['POAP_MAC']
+               poap_log("Selected bundle name : %s" % options["bundle_name"])
             options["serial_number"] = os.environ['POAP_MAC']
-            poap_log("Selected conf file name : %s" % options["source_config_file"])
+            
 
-
-def set_cfg_file_host():
+def set_cfg_file_host(bundle=0):
     """
     Sets the name of the switch config file to download based on hostname
     received in the DHCP option. e.g conf_TestingSw.cfg
@@ -2018,16 +2057,23 @@ def set_cfg_file_host():
     poap_log("Setting source cfg filename based on switch hostname")
     if 'POAP_HOST_NAME' in os.environ:
         poap_log("Host Name: [%s]" % os.environ['POAP_HOST_NAME'])
-        options["source_config_file"] = "conf_%s.cfg" % os.environ['POAP_HOST_NAME']
+        if bundle == 0:
+            options["source_config_file"] = "conf_%s.cfg" % os.environ['POAP_HOST_NAME']
+            poap_log("Selected conf file name : %s" % options["source_config_file"])
+        else:
+            options["bundle_name"] = "%s" % os.environ['POAP_HOST_NAME']
+            poap_log("Selected bundle name : %s" % options["bundle_name"])
     else:
         poap_log("Host Name information missing, falling back to static mode")
-    poap_log("Selected conf file name : %s" % options["source_config_file"])
+    
 
 
-def set_cfg_file_location():
+def set_cfg_file_location(bundle=0):
     """
     Sets the name of the switch config file to download based on cdp
     information. e.g conf_switch_Eth1_32.cfg
+    bundle parameter is used to differentiate between config file name and bundle name. 
+    If bundle is 0, config file name is set. If bundle is 1, bundle name is set.
     """
     poap_log("Setting source cfg filename")
     poap_log("show cdp neighbors interface %s" % os.environ['POAP_INTF'])
@@ -2074,10 +2120,15 @@ def set_cfg_file_location():
     else:
         # 3K 6x and older releases don't print this info
         intf_name = cdp_info[-1]
-
-    options["source_config_file"] = "conf_%s_%s.cfg" % (switch_name, intf_name)
-    options["source_config_file"] = options["source_config_file"].replace("/", "_")
-    poap_log("Selected conf file name : %s" % options["source_config_file"])
+    
+    if bundle == 0:
+        options["source_config_file"] = "conf_%s_%s.cfg" % (switch_name, intf_name)
+        options["source_config_file"] = options["source_config_file"].replace("/", "_")
+        poap_log("Selected conf file name : %s" % options["source_config_file"])
+    else:
+        options["bundle_name"] = "%s_%s" % (switch_name, intf_name)
+        options["bundle_name"] = options["bundle_name"].replace("/", "_")
+        poap_log("Selected bundle name : %s" % options["bundle_name"])
 
 
 def get_version(option=0):
@@ -2494,8 +2545,9 @@ def setup_mode():
     elif options["mode"] == "mac":
         set_cfg_file_mac()
     elif options["mode"] == "hostname":
+        if 'POAP_SERIAL' in os.environ:
+            options["serial_number"] = os.environ['POAP_SERIAL']
         set_cfg_file_host()
-        options["serial_number"] = os.environ['POAP_SERIAL']
     elif options["mode"] == "personality":
         initialize_personality()
     elif options["mode"] == "raw":
@@ -2585,8 +2637,157 @@ def cleanup_temp_images():
         remove_file(midway_system)
 
 
+def determine_bundle_name():
+    """
+    Determines the name of the bundle that POAP script should look for, 
+    based on the input. 
+    If bundle name is explicity mentioned, try copying that else derive the bundle
+    name based on the provided option. Options are same as input of mode. 
+    """
+    allowed_bundle_options = ["location", "serial_number", "mac", "hostname"]
+    if options["bundle_name"] in allowed_bundle_options:
+        poap_log("Deriving bundle name based on the option %s" % options["bundle_name"])
+        if options["bundle_name"] == "location":
+            set_cfg_file_location(bundle=1)
+            options["serial_number"] = os.environ['POAP_SERIAL']
+        elif options["bundle_name"] == "serial_number":
+            set_cfg_file_serial(bundle=1)
+        elif options["bundle_name"] == "mac":
+            set_cfg_file_mac(bundle=1)
+        elif options["bundle_name"] == "hostname":
+            set_cfg_file_host(bundle=1)
+    else:
+        poap_log("Using the provided bundle name %s" % options["bundle_name"])
+
+
+def check_feature_openconfig(file_path):
+    with open(file_path, 'r') as f:
+        for line in f:
+            if 'feature openconfig' in line:
+                return True
+    return False
+
+
+def process_bundle():
+    """
+    Processes the bundle for POAP deployment. Assumes bundle mode is supported and bundle name is determined.
+
+    Steps:
+    1. Creates/cleans the /bootflash/poap_pending/ directory
+    2. Attempts to copy bundle (tries .tar extension first, then .tgz if that fails)
+    3. Extracts the bundle to poap_pending directory
+    4. Searches for poap.cfg in extracted bundle (root, subdirectory, or nested locations)
+    5. Validates that the config contains 'feature openconfig' requirement
+    6. Moves the config file to the destination path for POAP processing
+
+    Returns:
+        True: Bundle processing successful, skip normal config copy in POAP flow
+        False: Bundle processing failed, proceed with normal POAP flow
+    
+    Note: Cleans up poap_pending directory on any failure
+    """
+    dest_path_base = "/bootflash/poap_pending/"
+    ret = False
+    
+    try:
+        if os.path.exists(dest_path_base):
+            poap_log("Cleaning existing bundle directory: %s" % dest_path_base)
+            if os.path.isdir(dest_path_base):
+                shutil.rmtree(dest_path_base)
+            else:
+                os.remove(dest_path_base)
+        os.makedirs(dest_path_base)
+    except OSError as e:
+        poap_log("Failed to create destination path for bundle: %s" % str(e))
+        return False
+    
+    # First try, with .tar extension
+    dest_bundle_path = os.path.join(dest_path_base, "%s.tar" % options["bundle_name"])
+    src_bundle_path = os.path.join(options["config_path"], options["bundle_name"] + '.tar')
+    tmp_file = dest_bundle_path + ".tmp"
+
+    do_copy(src_bundle_path, dest_bundle_path, options["timeout_config"], tmp_file, dont_abort=True)
+
+    if (os.path.exists(dest_bundle_path) and (os.path.getsize(dest_bundle_path) > 0)):
+        poap_log("Bundle copied successfully with .tar extension. Extracting the bundle now.")
+        try:
+            with tarfile.open(dest_bundle_path) as tar:
+                tar.extractall(dest_path_base)
+        except Exception as e:
+            poap_log("Failed to extract the bundle: %s" % str(e))
+            shutil.rmtree(dest_path_base, ignore_errors=True)
+            return False
+    else:
+        poap_log("Bundle with .tar extension not found. Trying with .tgz extension.")
+
+        # Try .tgz
+        dest_bundle_path = os.path.join(dest_path_base, "%s.tgz" % options["bundle_name"])
+        src_bundle_path = os.path.join(options["config_path"], options["bundle_name"] + ".tgz")
+        tmp_file = dest_bundle_path + ".tmp"
+
+        do_copy(src_bundle_path, dest_bundle_path, options["timeout_config"], tmp_file, dont_abort=True)
+
+        if (os.path.exists(dest_bundle_path) and (os.path.getsize(dest_bundle_path) > 0)):
+            poap_log("Bundle with .tgz extension copied successfully. Extracting the bundle now.")
+            try:
+                with tarfile.open(dest_bundle_path) as tar:
+                    tar.extractall(dest_path_base)
+            except Exception as e:
+                poap_log("Failed to extract the bundle: %s" % str(e))
+                shutil.rmtree(dest_path_base, ignore_errors=True)
+                return False
+        else:
+            poap_log("Bundle with .tgz extension also not found. Aborting bundle mode.")
+            shutil.rmtree(dest_path_base, ignore_errors=True)
+            return False        
+        
+
+    # Bundle extraction successful. Now locate the poap.cfg file within the extracted bundle.
+    # The config file may be at the root level, in a subdirectory, or nested deeper in the bundle.
+    # Once found, validate it contains 'feature openconfig' and move it to the destination path.
+    extracted_config_path = os.path.join(dest_path_base, "poap.cfg")
+    if not os.path.isfile(extracted_config_path):
+        bundle_subdir_config_path = os.path.join(dest_path_base, options["bundle_name"], "poap.cfg")
+        if os.path.isfile(bundle_subdir_config_path):
+            extracted_config_path = bundle_subdir_config_path
+        else:
+            extracted_config_path = None
+            for root, dirs, files in os.walk(dest_path_base):
+                if "poap.cfg" in files:
+                    extracted_config_path = os.path.join(root, "poap.cfg")
+                    break
+    
+    if extracted_config_path and os.path.isfile(extracted_config_path):
+        dest_config_path = os.path.join("/bootflash", options["split_config_second"])
+        try:
+            ret = check_feature_openconfig(extracted_config_path)
+            if ret == False:
+                poap_log("Feature openconfig is not supported on this config. Aborting bundle mode.")
+                shutil.rmtree(dest_path_base, ignore_errors=True)
+                return False
+            else:
+                try: 
+                    shutil.move(extracted_config_path, dest_config_path)
+                except Exception as e:
+                    poap_log("Failed to copy config file from the bundle to the config path: %s" % str(e))
+                    shutil.rmtree(dest_path_base, ignore_errors=True)
+                    return False
+                
+                poap_log("Config file copied successfully from the bundle. Bundle processing successful.")
+                return True
+        except Exception as e:
+            poap_log("Failed to copy config file from the bundle: %s" % str(e))
+            shutil.rmtree(dest_path_base, ignore_errors=True)
+            return False
+    else:
+        poap_log("Config file poap.cfg not found in the extracted bundle. Bundle corrupted. Aborting bundle mode.")
+        shutil.rmtree(dest_path_base, ignore_errors=True)
+        return False
+
 def main():
     signal.signal(signal.SIGTERM, sigterm_handler)
+    bundle_supported = False
+    bundle_successful = False
 
     # Set all the default parameters and validate the ones provided
     set_defaults_and_validate_options()
@@ -2606,12 +2807,22 @@ def main():
     # Now that we know we're going to try and copy, let's create
     # the directory structure needed, if any
     create_destination_directories()
-
+    
     check_multilevel_install()
     # In two step install we just copy the midway image and reboot.
     # Config copy and script download happens in the second step.
     if multi_step_install == False:
-        copy_config()
+        if options["bundle_name"] != "":
+            bundle_supported = is_bundle_supported()
+            if bundle_supported == False:
+                poap_log("Bundle not supported on current running image. Aborting bundle mode and proceeding with normal POAP flow.")
+            else:
+                poap_log("Bundle mode is supported. Proceeding with bundle installation.")
+                determine_bundle_name()
+                bundle_successful = process_bundle()
+        
+        if bundle_successful != True:
+            copy_config()
 
         # Download user scripts and agents
         download_scripts_and_agents()
