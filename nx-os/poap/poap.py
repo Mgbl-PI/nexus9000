@@ -736,14 +736,22 @@ def is_bundle_supported():
     """
     Checks if the image supports bundle or not. If target image is greater
     than or equal to 10.7(1) then bundle is supported. 
-    Typical image format is nxos.10.7.1.I1.bin or nxos64-cs.10.7.1.bin for bundle supporting images.
+    Typical image format is nxos.10.7.1.I1.bin or nxos64-cs.10.7.1.F.bin for bundle supporting images.
     """
 
     parts = options['target_system_image'].split(".")
     if len(parts) < 5:
+        poap_log(
+            "Unable to determine if bundle is supported from given target image {}. "
+            "Assuming bundle is not supported.".format(options["target_system_image"])
+        )
         return False
 
     if "nxos" not in parts[0]:
+        poap_log(
+            "Unable to determine if bundle is supported from given target image {}. "
+            "Assuming bundle is not supported.".format(options["target_system_image"])
+        )
         return False
 
     try:
@@ -2661,11 +2669,43 @@ def determine_bundle_name():
 
 
 def check_feature_openconfig(file_path):
-    with open(file_path, 'r') as f:
-        for line in f:
-            if 'feature openconfig' in line:
-                return True
-    return False
+    try:
+        with open(file_path, 'r') as f:
+            for line in f:
+                if 'feature openconfig' in line:
+                    return True
+        return False
+    except (IOError, OSError, UnicodeDecodeError) as e:
+        poap_log("Failed to read config file: %s" % str(e))
+        return False
+
+
+def safe_extract_tar(tar_obj, destination):
+    """
+    Safely extracts tar members by preventing path traversal and unsafe entries.
+    """
+    destination_real = os.path.realpath(destination)
+    safe_members = []
+
+    for member in tar_obj.getmembers():
+        member_name = member.name
+
+        if member_name.startswith("/") or member_name.startswith("\\"):
+            raise ValueError("Tar contains absolute path entry: %s" % member_name)
+
+        target_path = os.path.realpath(os.path.join(destination_real, member_name))
+        if not (target_path == destination_real or target_path.startswith(destination_real + os.sep)):
+            raise ValueError("Tar contains path traversal entry: %s" % member_name)
+
+        if member.issym() or member.islnk():
+            raise ValueError("Tar contains link entry: %s" % member_name)
+
+        if not (member.isfile() or member.isdir()):
+            raise ValueError("Tar contains unsupported entry type: %s" % member_name)
+
+        safe_members.append(member)
+
+    tar_obj.extractall(destination_real, members=safe_members)
 
 
 def process_bundle():
@@ -2687,6 +2727,8 @@ def process_bundle():
     Note: Cleans up .poap_pending directory on any failure
     """
     dest_path_base = "/bootflash/.poap_pending/"
+    dest_config_file = "poap.cfg"
+
     ret = False
     
     try:
@@ -2712,7 +2754,7 @@ def process_bundle():
         poap_log("Bundle copied successfully with .tar extension. Extracting the bundle now.")
         try:
             with tarfile.open(dest_bundle_path) as tar:
-                tar.extractall(dest_path_base)
+                safe_extract_tar(tar, dest_path_base)
         except Exception as e:
             poap_log("Failed to extract the bundle: %s" % str(e))
             shutil.rmtree(dest_path_base, ignore_errors=True)
@@ -2731,7 +2773,7 @@ def process_bundle():
             poap_log("Bundle with .tgz extension copied successfully. Extracting the bundle now.")
             try:
                 with tarfile.open(dest_bundle_path) as tar:
-                    tar.extractall(dest_path_base)
+                    safe_extract_tar(tar, dest_path_base)
             except Exception as e:
                 poap_log("Failed to extract the bundle: %s" % str(e))
                 shutil.rmtree(dest_path_base, ignore_errors=True)
@@ -2745,16 +2787,16 @@ def process_bundle():
     # Bundle extraction successful. Now locate the poap.cfg file within the extracted bundle.
     # The config file may be at the root level, in a subdirectory, or nested deeper in the bundle.
     # Once found, validate it contains 'feature openconfig' and move it to the destination path.
-    extracted_config_path = os.path.join(dest_path_base, "poap.cfg")
+    extracted_config_path = os.path.join(dest_path_base, dest_config_file)
     if not os.path.isfile(extracted_config_path):
-        bundle_subdir_config_path = os.path.join(dest_path_base, options["bundle_name"], "poap.cfg")
+        bundle_subdir_config_path = os.path.join(dest_path_base, options["bundle_name"], dest_config_file)
         if os.path.isfile(bundle_subdir_config_path):
             extracted_config_path = bundle_subdir_config_path
         else:
             extracted_config_path = None
             for root, dirs, files in os.walk(dest_path_base):
-                if "poap.cfg" in files:
-                    extracted_config_path = os.path.join(root, "poap.cfg")
+                if dest_config_file in files:
+                    extracted_config_path = os.path.join(root, dest_config_file)
                     break
     
     if extracted_config_path and os.path.isfile(extracted_config_path):
@@ -2780,7 +2822,7 @@ def process_bundle():
             shutil.rmtree(dest_path_base, ignore_errors=True)
             return False
     else:
-        poap_log("Config file poap.cfg not found in the extracted bundle. Bundle corrupted. Aborting bundle mode.")
+        poap_log("Config file %s not found in the extracted bundle. Bundle corrupted. Aborting bundle mode." % dest_config_file)
         shutil.rmtree(dest_path_base, ignore_errors=True)
         return False
 
