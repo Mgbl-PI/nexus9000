@@ -2683,6 +2683,16 @@ def check_feature_openconfig(file_path):
 def safe_extract_tar(tar_obj, destination):
     """
     Safely extracts tar members by preventing path traversal and unsafe entries.
+    After extraction, normalizes ownership/permissions for extracted files.
+
+    Security checks:
+    - Rejects absolute paths and traversal entries
+    - Rejects symlinks/hardlinks and special entry types
+
+    Post-extract normalization:
+    - Attempts to set ownership to root:root (uid=0, gid=0)
+    - Sets file mode to 0664 and directory mode to 0777
+    - Logs and continues on permission/OS errors (does not abort extraction)
     """
     destination_real = os.path.realpath(destination)
     safe_members = []
@@ -2706,6 +2716,31 @@ def safe_extract_tar(tar_obj, destination):
         safe_members.append(member)
 
     tar_obj.extractall(destination_real, members=safe_members)
+
+
+    # Normalize extracted file ownership and permissions.
+    # Permission failures are logged but do not stop bundle processing.
+    for member in safe_members:
+        extracted_path = os.path.join(destination_real, member.name)
+        if not os.path.exists(extracted_path):
+            continue
+
+        try:
+            os.chown(extracted_path, 0, 0)  # uid=0 (root), gid=0 (root)
+        except PermissionError as e:
+            poap_log("Insufficient permissions to change ownership for %s: %s" % (extracted_path, str(e)))
+        except OSError as e:
+            poap_log("Failed to change ownership for %s: %s" % (extracted_path, str(e)))
+
+        try:
+            if member.isfile():
+                os.chmod(extracted_path, 0o664)
+            elif member.isdir():
+                os.chmod(extracted_path, 0o777)
+        except PermissionError as e:
+            poap_log("Insufficient permissions to change mode for %s: %s" % (extracted_path, str(e)))
+        except OSError as e:
+            poap_log("Failed to change mode for %s: %s" % (extracted_path, str(e)))
 
 
 def process_bundle():
@@ -2751,6 +2786,11 @@ def process_bundle():
     do_copy(src_bundle_path, dest_bundle_path, options["timeout_config"], tmp_file, dont_abort=True)
 
     if (os.path.exists(dest_bundle_path) and (os.path.getsize(dest_bundle_path) > 0)):
+        try:
+            os.chmod(dest_bundle_path, 0o664)
+        except OSError as e:
+            poap_log("Failed to change mode for bundle archive %s: %s" % (dest_bundle_path, str(e)))
+
         poap_log("Bundle copied successfully with .tar extension. Extracting the bundle now.")
         try:
             with tarfile.open(dest_bundle_path) as tar:
@@ -2770,6 +2810,11 @@ def process_bundle():
         do_copy(src_bundle_path, dest_bundle_path, options["timeout_config"], tmp_file, dont_abort=True)
 
         if (os.path.exists(dest_bundle_path) and (os.path.getsize(dest_bundle_path) > 0)):
+            try:
+                os.chmod(dest_bundle_path, 0o664)
+            except OSError as e:
+                poap_log("Failed to change mode for bundle archive %s: %s" % (dest_bundle_path, str(e)))
+
             poap_log("Bundle with .tgz extension copied successfully. Extracting the bundle now.")
             try:
                 with tarfile.open(dest_bundle_path) as tar:
