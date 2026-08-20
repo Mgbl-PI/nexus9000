@@ -1,5 +1,5 @@
 #!/bin/env python3
-#md5sum="eb08329071ac99ccc2739640439152a3"
+#md5sum="a1ea7367ed87afffc5984d3a4d3bdbaa"
 """
 If any changes are made to this script, please run the below command
 in bash shell to update the above md5sum. This is used for integrity check.
@@ -2938,6 +2938,9 @@ def main():
     if single_image == False:
         install_images()
     elif global_upgrade_bios:
+        if options["use_nxos_boot"] == False:
+            abort("When upgrading BIOS, disabling 'boot nxos' is not allowed. "
+                  "Please set global_upgrade_bios to FALSE and try again.")
         install_issu()
     elif options["use_nxos_boot"]:
         install_images_7_x()
@@ -2978,4 +2981,3 @@ if __name__ == "__main__":
                      .format(fname, exc_tb.tb_lineno))
             exc_tb = exc_tb.tb_next
         abort()
-
