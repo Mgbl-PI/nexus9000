@@ -1,5 +1,5 @@
 #!/bin/env python3
-#md5sum="a1ea7367ed87afffc5984d3a4d3bdbaa"
+#md5sum="2694c9836e7bf64645222cc654c7ac49"
 """
 If any changes are made to this script, please run the below command
 in bash shell to update the above md5sum. This is used for integrity check.
@@ -54,10 +54,10 @@ options = {
 }
 
 """
-Setting global_use_kstack to True makes copy operation use the 
-kstack option to copy images.
-Setting global_upgrade_bios to True makes sure BIOS gets upgraded
-to latest BIOS available with the new image.
+global_use_kstack: use the kstack option when copying images. This speeds up image copy. 
+global_upgrade_bios: upgrade BIOS to the latest version available with the new image.
+    Requires use_nxos_boot to also be True, as forced BIOS upgrade is only supported
+    with nxos boot.
 """
 global_use_kstack = False
 global_upgrade_bios = False
@@ -2939,8 +2939,10 @@ def main():
         install_images()
     elif global_upgrade_bios:
         if options["use_nxos_boot"] == False:
-            abort("When upgrading BIOS, disabling 'boot nxos' is not allowed. "
-                  "Please set global_upgrade_bios to FALSE and try again.")
+            abort("global_upgrade_bios set to TRUE requires use_nxos_boot to "
+                  "also be TRUE, because a forced BIOS upgrade is only "
+                  "supported with the 'boot nxos' command and not an "
+                  "'install all' upgrade.")
         install_issu()
     elif options["use_nxos_boot"]:
         install_images_7_x()
