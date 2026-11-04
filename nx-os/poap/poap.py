@@ -34,6 +34,25 @@ except ImportError:
     from cli import *
     legacy = False
 
+# Optional structured reporting to native POAP history. Every call is best
+# effort and returns a bool, so reporting can never interrupt provisioning.
+try:
+    import poap_report as history
+except ImportError:
+    class history(object):
+        """No-op fallback so an image without the module still provisions."""
+        @staticmethod
+        def set_options(options):
+            return False
+
+        @staticmethod
+        def event(stage, outcome, code=0, path=None):
+            return False
+
+        @staticmethod
+        def failed(code=0, path=None):
+            return False
+
 """
 Increasing the script timeout to handle the legacy nxos
 versions where upgrading will take time
@@ -455,6 +474,7 @@ def abort(msg=None):
     if msg != None:
         poap_log(msg)
     
+    history.failed()
     rollback_rpm_license_certificates()
     cleanup_files()
     close_log_handle()
@@ -647,6 +667,7 @@ def sigterm_handler(signum, stack):
     A signal handler for the SIGTERM signal. Cleans up and exits
     """
     poap_log("INFO: SIGTERM Handler")
+    history.failed()
     if (len(options["install_path"]) != 0 and options["mode"] != "personality"):
         abort("Cleaning up rpms")
     else:
@@ -1270,6 +1291,7 @@ def copy_remote_config():
             if verify_md5(md5_sum_given, os.path.join(options["destination_path"], org_file)):
                 poap_log("File %s already exists and MD5 matches" %
                          os.path.join(options["destination_path"], org_file))
+                history.event("configuration_download", "reused", path=org_file)
                 split_config_file()
                 return
         elif not md5_sum_given:
@@ -1280,14 +1302,19 @@ def copy_remote_config():
     timeout = options["timeout_config"]
     src = os.path.join(options["config_path"], options["source_config_file"])
 
+    # src is the full server-side path do_copy will fetch, which identifies
+    # the file far better than the bare name does.
+    history.event("configuration_download", "started", path=src)
     do_copy(src, org_file, timeout, tmp_file)
 
     if options["disable_md5"] == False:
         if md5_sum_given and not verify_md5(md5_sum_given,
                                             os.path.join(options["destination_path"], org_file)):
+            history.event("configuration_validation", "failed", path=org_file)
             abort("#### config file %s MD5 verification failed #####\n" % os.path.join(
                          options["destination_path"], org_file))
     split_config_file()
+    history.event("configuration_download", "succeeded", path=src)
     poap_log("INFO: Completed copy of config file to %s" %
              os.path.join(options["destination_path"], org_file))
 
@@ -1384,6 +1411,8 @@ def copy_system():
             
     if options["disable_md5"] == True and target_system_image_is_currently_running():
         poap_log("Currently running image is target image. Skipping system image download")
+        history.event("system_image_download", "skipped",
+                      path=options["target_system_image"])
         return
 
     # do compact scp of system image if bootflash size is <= 2GB and "compact_image" option is enabled
@@ -1410,6 +1439,9 @@ def copy_system():
                 stored in destination_system_image with target_system_image.
                 """
                 options["destination_system_image"] = options["target_system_image"]
+                history.set_options(options)
+                history.event("system_image_download", "reused",
+                              path=options["target_system_image"])
                 del_system_image = False
                 return
         elif not md5_sum_given:
@@ -1423,6 +1455,7 @@ def copy_system():
     # For personality we use the personality path for everything
     src = os.path.join(options["target_image_path"], options["target_system_image"])
 
+    history.event("system_image_download", "started", path=src)
     poap_log("INFO: Starting Copy of System Image")
 
     ret = do_copy(src, org_file, timeout, tmp_file, do_compact)
@@ -1434,8 +1467,10 @@ def copy_system():
     if options["disable_md5"] == False and md5_sum_given and do_compact == False:
         if not verify_md5(md5_sum_given,
                           os.path.join(options["destination_path"], org_file)):
+            history.event("system_image_validation", "failed", path=org_file)
             abort("#### System file %s MD5 verification failed #####\n" % os.path.join(
                          options["destination_path"], org_file))
+    history.event("system_image_download", "succeeded", path=src)
     poap_log("INFO: Completed Copy of System Image to %s" % os.path.join(
         options["destination_path"], org_file))
     del_system_image = True
@@ -1464,6 +1499,7 @@ def copy_kickstart():
                 stored in destination_kickstart_image with target_kickstart_image.
                 """
                 options["destination_kickstart_image"] = options["target_kickstart_image"]
+                history.set_options(options)
                 del_kickstart_image = False
                 return
 
@@ -1492,6 +1528,8 @@ def install_images_7_x():
         poap_log("Installing new BIOS (will take up to 5 minutes. Don't abort)")
         install_bios()
 
+    history.event("installation", "started",
+                  path=options["destination_system_image"])
     poap_log("Installing NXOS image")
 
     system_image_path = os.path.join(options["destination_path"],
@@ -1523,6 +1561,8 @@ def install_images_7_x():
             poap_log("WARNING: retry in 30 seconds")
             time.sleep(retry_delay)
 
+    history.event("installation", "succeeded",
+                  path=options["destination_system_image"])
     poap_log("INFO: Configuration successful")
 
 def install_nxos_issu():
@@ -1548,6 +1588,7 @@ def install_nxos_issu():
         os.system("touch /tmp/poap_issu_started")
         poap_log("terminal dont-ask ; install all nxos %s no-reload non-interruptive" % system_image_path)
         cli("terminal dont-ask ; install all nxos %s no-reload non-interruptive" % system_image_path)
+        POAP_MILESTONE(1)
         time.sleep(5)
         cli("terminal dont-ask ; write erase")
         time.sleep(5)
@@ -1573,6 +1614,8 @@ def install_images():
                                options["destination_system_image"])
     system_path = system_path.replace("/bootflash", "bootflash:", 1)
 
+    history.event("installation", "started",
+                  path=options["destination_system_image"])
     poap_log("Installing kickstart and system images")
     poap_log("######### Copying the boot variables ##########")
     cli("config terminal ; boot kickstart %s" % kickstart_path)
@@ -1596,6 +1639,8 @@ def install_images():
             poap_log("WARNING: retry in 30 seconds")
             time.sleep(retry_delay)
 
+    history.event("installation", "succeeded",
+                  path=options["destination_system_image"])
     poap_log("INFO: Configuration successful")
 
     if multi_step_install == True:
@@ -1706,6 +1751,8 @@ def parse_poap_yaml():
     if ("Target_image" in dictionary):
         options["target_system_image"] = dictionary["Target_image"]
         options["destination_system_image"] = dictionary["Target_image"]
+        history.set_options(options)
+        history.event("yaml", "succeeded", path=copy_path)
         
         
 def validate_yaml_file():
@@ -2387,6 +2434,7 @@ def set_next_upgrade_from_user():
         # Keep overwriting midway images
         options["destination_kickstart_image"] = options["destination_midway_kickstart_image"]
         options["destination_system_image"] = options["destination_midway_system_image"]
+        history.set_options(options)
         multi_step_install = True
     else:
         poap_log("Already on the midway image, upgrading to %s next." %
@@ -2445,6 +2493,7 @@ def set_next_upgrade_from_upgrade_path():
         # Keep overwriting midway images
         options["destination_kickstart_image"] = options["destination_midway_kickstart_image"]
         options["destination_system_image"] = options["destination_midway_system_image"]
+        history.set_options(options)
 
         multi_step_install = True
     else:
@@ -2873,17 +2922,23 @@ def process_bundle():
 
 def main():
     signal.signal(signal.SIGTERM, sigterm_handler)
+    history.event("setup", "started")
     bundle_supported = False
     bundle_successful = False
 
     # Set all the default parameters and validate the ones provided
     set_defaults_and_validate_options()
+    history.set_options(options)
+    history.event("options_validation", "succeeded")
 
     # Configure the logging for the POAP process
     setup_logging()
 
     # Initialize parameters based on the mode
     setup_mode()
+    # Mode selection can derive the config name, serial number and image.
+    history.set_options(options)
+    history.event("mode_selection", "succeeded")
 
     # Set the prefix for syslogs based on the POAP mode
     set_syslog_prefix()
@@ -2955,6 +3010,7 @@ def main():
         invoke_personality_restore()
         exit(0)
 
+    history.event("post_processing", "started")
     if empty_first_file == 0:
         cli('copy bootflash:%s scheduled-config' % options["split_config_first"])
         poap_log("Done copying the first scheduled cfg")
@@ -2967,6 +3023,7 @@ def main():
     if (options["use_nxos_boot"] == False):
         install_nxos_issu()
 
+    history.event("post_processing", "succeeded")
     log_hdl.close()
     exit(0)
 
