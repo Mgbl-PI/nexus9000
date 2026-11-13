@@ -1588,7 +1588,6 @@ def install_nxos_issu():
         os.system("touch /tmp/poap_issu_started")
         poap_log("terminal dont-ask ; install all nxos %s no-reload non-interruptive" % system_image_path)
         cli("terminal dont-ask ; install all nxos %s no-reload non-interruptive" % system_image_path)
-        POAP_MILESTONE(1)
         time.sleep(5)
         cli("terminal dont-ask ; write erase")
         time.sleep(5)
